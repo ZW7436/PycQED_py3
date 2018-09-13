@@ -45,6 +45,7 @@ RUN pip install --upgrade --no-cache-dir pip && \
         pyqtgraph \
         pyserial \
         pytest \
+        pytest-xvfb \
         pyvisa \
         qutip \
         qtpy \
@@ -60,8 +61,3 @@ RUN pip install --no-cache-dir \
         pytest-cov \
         coveralls \
         codacy-coverage
-
-ADD docker/xvfb_init /etc/init.d/xvfb
-ADD docker/xvfb-daemon-run /usr/bin/xvfb-daemon-run
-RUN chmod a+x /etc/init.d/xvfb && \
-    chmod a+x /usr/bin/xvfb-daemon-run
