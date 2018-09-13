@@ -1,8 +1,3 @@
-"""
-This file reads in a pygsti dataset file and converts it to a valid
-OpenQL sequence.
-"""
-
 from os.path import join
 
 from pycqed.measurement.randomized_benchmarking import \
@@ -19,6 +14,7 @@ def randomized_benchmarking(qubits: list, platf_cfg: str,
                             initialize: bool=True,
                             interleaving_cliffords=[None],
                             program_name: str='randomized_benchmarking',
+                            simultaneous_single_qubit_RB: bool=False,
                             cal_points: bool=True,
                             f_state_cal_pts: bool=True,
                             recompile: bool=True):
@@ -122,20 +118,30 @@ def randomized_benchmarking(qubits: list, platf_cfg: str,
                     if initialize:
                         for qubit_idx in qubit_map.values():
                             k.prepz(qubit_idx)
-
-                    cl_seq = rb.randomized_benchmarking_sequence(
-                        n_cl, number_of_qubits=number_of_qubits,
-                        desired_net_cl=net_clifford,
-                        max_clifford_idx=max_clifford_idx,
-                        interleaving_cl=interleaving_cl)
-                    for cl in cl_seq:
-                        gates = Cl(cl).gate_decomposition
-                        for g, q in gates:
-                            if isinstance(q, str):
-                                k.gate(g, [qubit_map[q]])
-                            elif isinstance(q, list):
-                                # proper codeword
-                                k.gate(g, [qubit_map[q[0]], qubit_map[q[1]]])
+                    if not simultaneous_single_qubit_RB:
+                        cl_seq = rb.randomized_benchmarking_sequence(
+                            n_cl, number_of_qubits=number_of_qubits,
+                            desired_net_cl=net_clifford,
+                            max_clifford_idx=max_clifford_idx,
+                            interleaving_cl=interleaving_cl)
+                        for cl in cl_seq:
+                            gates = Cl(cl).gate_decomposition
+                            for g, q in gates:
+                                if isinstance(q, str):
+                                    k.gate(g, [qubit_map[q]])
+                                elif isinstance(q, list):
+                                    # proper codeword
+                                    k.gate(g, [qubit_map[q[0]], qubit_map[q[1]]])
+                    else:
+                        for gsi, q_idx in enumerate(qubits):
+                            cl_seq = rb.randomized_benchmarking_sequence(
+                                n_cl, number_of_qubits=1,
+                                desired_net_cl=net_clifford,
+                                interleaving_cl=interleaving_cl)
+                            for cl in cl_seq:
+                                gates = Cl(cl).gate_decomposition
+                                for g, q in gates:
+                                    k.gate(g, [q_idx])
 
                     # This hack is required to align multiplexed RO in openQL..
                     k.gate("wait",  list(qubit_map.values()), 0)

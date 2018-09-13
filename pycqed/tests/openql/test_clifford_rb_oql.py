@@ -15,12 +15,23 @@ ql.set_option('output_dir', output_dir)
 class Test_cliff_rb_oql(unittest.TestCase):
     def test_single_qubit_rb_seq(self):
         p = rb_oql.randomized_benchmarking([0], platf_cfg=config_fn,
+                                           program_name= 'single_q_RB',
                                            nr_cliffords=[1, 5], nr_seeds=1,
-                                           cal_points=False)
-        self.assertEqual(p.name, 'randomized_benchmarking')
+                                           cal_points=True)
+        self.assertEqual(p.name, 'single_q_RB')
 
     def test_two_qubit_rb_seq(self):
         p = rb_oql.randomized_benchmarking([2, 0], platf_cfg=config_fn,
+                                           program_name= 'two_q_RB',
                                            nr_cliffords=[1, 5], nr_seeds=1,
-                                           cal_points=False)
-        self.assertEqual(p.name, 'randomized_benchmarking')
+                                           cal_points=True)
+        self.assertEqual(p.name, 'two_q_RB')
+
+    def test_simultaneous_single_qubit_rb_seq(self):
+        p = rb_oql.randomized_benchmarking([2, 0], platf_cfg=config_fn,
+                                           program_name= 'sim_single_q_RB',
+                                           nr_cliffords=[1, 5], nr_seeds=1,
+                                           simultaneous_single_qubit_RB=True,
+                                           cal_points=True)
+        self.assertEqual(p.name, 'sim_single_q_RB')
+
