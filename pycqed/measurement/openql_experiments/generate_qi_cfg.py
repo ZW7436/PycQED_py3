@@ -1,4 +1,5 @@
 import json
+import sys
 import numpy as np
 from numpy import pi, sin, cos, exp
 from scipy.linalg import expm
@@ -36,7 +37,7 @@ def _angle_pi_output(angle):
     if abs(int(deg) - deg) < 1e-3:
         out = "{}".format(int(deg))
     else:
-        out = "{:.1f}".format(deg)
+        out = "{}".format(round(deg, 2))
     return out.replace('-', 'm')
 
 
@@ -107,25 +108,34 @@ def generate_config(filename: str,
     documentation under "configuration_specification".
     """
 
-    angles_pi = {
+    # Angles are provided in units of pi here
+    rotations_axis = {
         'x': [0.67, -0.23, -0.08, 0.08, -0.5, 0.5, 1],
         'y': [-0.5, 0.5, 1],
-        'z': [-0.38, 0.08, -0.1, -0.5, 0.5, 1]
+        'z': [-0.38, 0.08, 0.18, -0.1, -0.5, 0.5, 1]
     }
+    extra_rotations = [(-0.48, 0.566),
+                       (0.42, -0.5),
+                       (0.38, -0.08),
+                       (0.38, 0.08),
+                       (0.38, 0.67)]
 
     # Set of tuples of all needed rotations in form (rot_axis_angle, rot_angle)
     # `rot_axis_angle` is an angle in xy plane, 0 for x and pi/2 for y.
-    rotations = [[[_rotation_expansions[ax](angle)] for angle in angles_pi[ax]]
-                 for ax in 'xyz']
+    rotations = [[[_rotation_expansions[ax](angle)]
+                  for angle in rotations_axis[ax]] for ax in 'xyz']
     # sorry
     rotations = list(sorted(set(
-        concat(concat(concat(rotations))))))
+        concat(concat(concat(rotations)))))) + extra_rotations
+    # to make all commands unique, if there is a collision
+    rotations = list(set(rotations))
+
     rots_kraus = [_rotation_kraus(*rot) for rot in rotations]
     rots_instr = [_rotation_instruction(*rot) for rot in rotations]
 
     rots_decomposition = dict(concat(
         [_rotation_decomposition(*args)
-         for args in zip(repeat(ax), angles_pi[ax])]
+         for args in zip(repeat(ax), rotations_axis[ax])]
         for ax in 'xyz'
     ))
 
@@ -443,3 +453,8 @@ def generate_config(filename: str,
 
     with open(filename, 'w') as f:
         json.dump(cfg, f, indent=4)
+
+
+if __name__ == "__main__":
+    filename = sys.argv[1]
+    generate_config(filename)
