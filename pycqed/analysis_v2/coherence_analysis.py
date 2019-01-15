@@ -5,6 +5,7 @@ Hacked together by Rene Vollmer
 import datetime
 import pycqed.analysis_v2.base_analysis as ba
 from pycqed.analysis_v2.base_analysis import plot_scatter_errorbar_fit, plot_scatter_errorbar
+from pycqed.analysis import measurement_analysis as ma_old
 
 import numpy as np
 import lmfit
@@ -17,7 +18,7 @@ class CoherenceTimesAnalysisSingle(ba.BaseDataAnalysis):
     def __init__(self, t_start: str = None, t_stop: str = None,
                  label: str = '',
                  options_dict: dict = None, extract_only: bool = False, auto: bool = True,
-                 close_figs: bool = True, do_fitting: bool = True,
+                 close_figs: bool = True, do_fitting: bool = True, fit_qubit_Q_factor=False,
                  tau_key='Analysis.Fitted Params F|1>.tau.value',
                  tau_std_key='Analysis.Fitted Params F|1>.tau.stderr',
                  use_chisqr = False,
@@ -38,6 +39,7 @@ class CoherenceTimesAnalysisSingle(ba.BaseDataAnalysis):
         :param close_figs: Close the figure (do not display)
         :param extract_only: Should we also do the plots?
         :param do_fitting: Should the run_fitting method be executed?
+        :param fit_qubit_Q_factor: Should fitting of a Q-factor be done? (for T1 measurement only!)
         :param tau_key: key for the tau (time) fit result, e.g. 'Analysis.Fitted Params F|1>.tau.value'
         :param tau_std_key: key for the tau (time) standard deviation fit result,
                             e.g. 'Analysis.Fitted Params F|1>.tau.stderr'
@@ -74,7 +76,7 @@ class CoherenceTimesAnalysisSingle(ba.BaseDataAnalysis):
                                 }
             self.numeric_params = ['tau', 'tau_stderr'] #, 'chisquared'
 
-
+        self.fit_qubit_Q_factor = fit_qubit_Q_factor
 
         self.plot_versus_dac = plot_versus_dac
         if plot_versus_dac:
@@ -145,6 +147,13 @@ class CoherenceTimesAnalysisSingle(ba.BaseDataAnalysis):
                 if self.verbose:
                     # todo: print EC and EJ
                     pass
+
+            if self.fit_qubit_Q_factor:
+                freq = self.raw_data_dict['dac_sorted_freq']
+                tau = self.raw_data_dict['freq_sorted_tau']
+                fit_object_Q_factor = fit_fixed_Q_factor(freq,tau)
+                self.fit_res['Q_qubit'] = fit_object_Q_factor.best_values['Q']
+                self.fit_res['Q_qubit_fitfct'] = lambda x: fit_object_Q_factor.model.eval(fit_object_Q_factor.params, freq=x)
         else:
             print('Warning: first run extract_data!')
 
@@ -157,7 +166,20 @@ class CoherenceTimesAnalysisSingle(ba.BaseDataAnalysis):
             self._prepare_plot(ax_id='time_stability', xvals=self.raw_data_dict['datetime'],
                                yvals=self.raw_data_dict['tau'], yerr=self.raw_data_dict['tau_stderr'],
                                xlabel='Time in Delft', xunit=None)
-            if self.plot_versus_frequency:
+            if self.plot_versus_frequency and self.fit_qubit_Q_factor:
+                plot_dict = {
+                    'xlabel': 'Qubit Frequency', 'xunit': 'Hz',
+                    'ylabel': 'T1', 'yunit': 's'
+                }
+                pds, pdf = plot_scatter_errorbar_fit(self=self, ax_id='freq_relation',
+                                                     xdata=self.raw_data_dict['freq_sorted'],
+                                                     ydata=self.raw_data_dict['freq_sorted_tau'],
+                                                     yerr=self.raw_data_dict['freq_sorted_tau_stderr'],
+                                                     fitfunc=self.fit_res['Q_qubit_fitfct'],
+                                                     pdict_scatter=plot_dict, pdict_fit=plot_dict)
+                self.plot_dicts["freq_relation_scatter"] = pds
+                self.plot_dicts["freq_relation_fit"] = pdf
+            else:
                 self._prepare_plot(ax_id='freq_relation', xvals=self.raw_data_dict['freq_sorted'],
                                    yvals=self.raw_data_dict['freq_sorted_tau'],
                                    yerr=self.raw_data_dict['freq_sorted_tau_stderr'],
@@ -214,7 +236,7 @@ class CoherenceTimesAnalysisSingle(ba.BaseDataAnalysis):
             'ylabel': 'Coherence',
             'yrange': (0, 1.1 * np.max(yvals)),
             'yunit': 's',
-            # 'marker': 'x',
+            'marker': 'x',
             # 'setlabel': setlabel,
             # 'legend_title': legend_title,
             # 'title': (self.raw_data_dict['timestamps'][0]+' - ' +
@@ -226,6 +248,134 @@ class CoherenceTimesAnalysisSingle(ba.BaseDataAnalysis):
 
         self.plot_dicts[ax_id] = plot_scatter_errorbar(self=self, ax_id=ax_id, xdata=xvals, ydata=yvals,
                                                        xerr=None, yerr=yerr, pdict=plot_dict)
+
+
+class AliasedCoherenceTimesAnalysisSingle(ba.BaseDataAnalysis):
+    # todo docstring
+
+    def __init__(self, t_start: str=None, t_stop: str=None,
+                label: str='', data_file_path: str=None,
+                options_dict: dict=None, extract_only: bool=False,
+                do_fitting: bool=True, auto=True,
+                ch_idxs: list =[0, 1],
+                ch_amp_key: str='Snapshot/instruments/AWG8_8014'
+                '/parameters/awgs_0_outputs_1_amplitude',
+                ch_range_key: str='Snapshot/instruments/AWG8_8014'
+                '/parameters/sigouts_0_range',
+                waveform_amp_key: str='Snapshot/instruments/FL_LutMan_QR'
+                '/parameters/sq_amp',
+                vary_offset=True):
+        super().__init__(t_start=t_start, t_stop=t_stop,
+                        label=label,
+                        data_file_path=data_file_path,
+                        options_dict=options_dict,
+                        extract_only=extract_only, do_fitting=do_fitting)
+
+        self.params_dict = {'xlabel': 'sweep_name',
+                            'xunit': 'sweep_unit',
+                            'xvals': 'sweep_points',
+                            'measurementstring': 'measurementstring',
+                            'value_names': 'value_names',
+                            'value_units': 'value_units',
+                            'measured_values': 'measured_values'}
+        self.vary_offset = vary_offset
+        self.numeric_params = []
+        self.ch_idxs = ch_idxs
+        self.ch_amp_key = ch_amp_key
+        self.ch_range_key = ch_range_key
+        self.waveform_amp_key = waveform_amp_key
+        if auto:
+            self.run_analysis()
+
+    def extract_data(self):
+        super().extract_data()
+        
+        a = ma_old.MeasurementAnalysis(
+            timestamp=self.t_start, auto=False, close_file=False)
+        a.get_naming_and_values()
+
+        ch_amp = a.data_file[self.ch_amp_key].attrs['value']
+        if self.ch_range_key is None:
+            ch_range = 2  # corresponds to a scale factor of 1
+        else:
+            ch_range = a.data_file[self.ch_range_key].attrs['value']
+        waveform_amp = a.data_file[self.waveform_amp_key].attrs['value']
+        amp = ch_amp*ch_range/2*waveform_amp
+        self.proc_data_dict['sq_amp'] = amp
+
+    def process_data(self):
+        self.proc_data_dict
+
+        xlab = self.raw_data_dict['value_names'][0][self.ch_idxs[0]]
+        ylab = self.raw_data_dict['value_names'][0][self.ch_idxs[1]]
+        xs = self.raw_data_dict['measured_values'][0][self.ch_idxs[0]]
+        ys = self.raw_data_dict['measured_values'][0][self.ch_idxs[1]]
+
+        mn = (np.mean(xs) + np.mean(ys))/2
+        self.proc_data_dict['mean'] = mn
+        amp = np.sqrt((xs-mn)**2 + (ys-mn)**2)*2
+        self.proc_data_dict['amp'] = amp
+
+    def run_fitting(self):
+        super().run_fitting()
+
+        decay_fit = lmfit.Model(lambda t, tau, A, n, o: A*np.exp(-(t/tau)**n)+o)
+
+        tau0 = self.raw_data_dict['xvals'][0][-1]/3
+        decay_fit.set_param_hint('tau', value=tau0, min=0, vary=True)
+        decay_fit.set_param_hint('A', value=0.7, vary=True)
+        decay_fit.set_param_hint('n', value=1.2, min=1, max=2, vary=True)
+        decay_fit.set_param_hint('o', value=0.01, min=0, max=0.3, vary=self.vary_offset)
+        params = decay_fit.make_params()
+        decay_fit = decay_fit.fit(data=self.proc_data_dict['amp'],
+                                    t=self.raw_data_dict['xvals'][0],
+                                    params=params)
+        self.fit_res['coherence_decay'] = decay_fit
+
+        text_msg = 'Summary\n'
+        text_msg += r'Square pulse amp {:.3g}'.format(self.proc_data_dict['sq_amp'])+' V\n'
+        text_msg += r'$A \exp(-(t/\tau)^n)+o$' + '\n'
+        text_msg += format_value_string(r'$A$', decay_fit.params['A'], '\n')
+        text_msg += format_value_string(r'$\tau$', decay_fit.params['tau'], '\n')
+        text_msg += format_value_string(r'$n$', decay_fit.params['n'], '\n')
+        text_msg += format_value_string(r'$o$', decay_fit.params['o'], '')
+
+        self.proc_data_dict['decay_fit_msg'] = text_msg
+                    
+
+    def save_fit_results(self):
+        # todo: if you want to save some results to a hdf5, do it here
+        pass
+
+    def prepare_plots(self):
+        self.plot_dicts['main'] = {
+            'plotfn': self.plot_line,
+            'xvals': self.raw_data_dict['xvals'][0],
+            'xlabel': self.raw_data_dict['xlabel'][0],
+            'xunit': 's',
+            'yvals': self.proc_data_dict['amp'],
+            'ylabel': r'$\sqrt{\langle \sigma_X \rangle^2 + \langle \sigma_Y \rangle^2}$',
+            'title': (self.raw_data_dict['timestamps'][0] + ' \n' +
+                      self.raw_data_dict['measurementstring'][0]),
+            'setlabel': 'data',
+            'color': 'C0',
+        }
+
+        self.plot_dicts['decay_fit'] = {
+            'plotfn': self.plot_fit,
+            'ax_id': 'main',
+            'fit_res': self.fit_res['coherence_decay'],
+            'setlabel': 'Decay fit',
+            'do_legend': True,
+            'color': 'C1',
+        }
+
+        self.plot_dicts['decay_text'] = {
+            'plotfn': self.plot_text,
+            'ax_id': 'main',
+            'text_string': self.proc_data_dict['decay_fit_msg'],
+            'xpos': 1.05, 'ypos': .5,
+            'horizontalalignment': 'left'}
 
 
 class CoherenceTimesAnalysis(ba.BaseDataAnalysis):
@@ -334,7 +484,7 @@ class CoherenceTimesAnalysis(ba.BaseDataAnalysis):
         labels = labels or {
             self.T1: '_T1' + s,
             self.T2: '_echo' + s,
-            self.T2_star: '_ramsey' + s,
+            self.T2_star: '_Ramsey' + s,
         }
 
         assert (len(tau_keys) == len(labels))
@@ -542,9 +692,9 @@ class CoherenceTimesAnalysis(ba.BaseDataAnalysis):
                         a.run_fitting()
                         self.fit_res[qubit][typ] = a.fit_res
 
-                        sorted_sens = self._put_data_into_scheme(scheme=all_dac, scheme_mess=a.raw_data_dict['dac'],
+                        sorted_sens = self._put_data_into_scheme(scheme=all_dac, scheme_mess=a.raw_data_dict['dac_sorted'],
                                                                  other_mess=a.fit_res['sensitivity_values'])
-                        sorted_flux = self._put_data_into_scheme(scheme=all_dac, scheme_mess=a.raw_data_dict['dac'],
+                        sorted_flux = self._put_data_into_scheme(scheme=all_dac, scheme_mess=a.raw_data_dict['dac_sorted'],
                                                                  other_mess=a.fit_res['flux_values'])
                         sorted_sens = np.array(sorted_sens, dtype=float)
                         sorted_flux = np.array(sorted_flux, dtype=float)
@@ -653,7 +803,7 @@ class CoherenceTimesAnalysis(ba.BaseDataAnalysis):
                     'xlabel': r'Sensitivity $|\partial\nu/\partial\Phi|$',
                     'xunit': r'GHz/$\Phi_0$',
                     'ylabel': r'$\Gamma_{\phi}$',
-                    'yunit': r'$s^{-1}$',
+                    'yunit': r'Hz',
                     'setlabel': '$\Gamma_{\phi,\mathrm{Ramsey}}$',
                 }
                 pdict_fit = {}
@@ -673,17 +823,19 @@ class CoherenceTimesAnalysis(ba.BaseDataAnalysis):
                 self.plot_dicts[cg_base + '_echo_scatter'] = pds
 
                 if self.options_dict.get('print_fit_result_plot', True):
-                    dac_fit_text = '$\Gamma = %.5f(\pm %.5f)$\n' % (
-                    self.fit_res[qubit]['gamma_intercept'], self.fit_res[qubit]['gamma_intercept_std'])
-                    # dac_fit_text += '$\Gamma/2 \pi = %.2f(\pm %.3f)$ MHz\n' % (self.fit_res[qubit]['gamma_intercept'], self.fit_res[qubit]['gamma_intercept_std'])
-                    # dac_fit_text += '$\Gamma/2 \pi = %.2f(\pm %.3f)$ MHz\n' % (self.fit_res[qubit]['gamma_intercept'], self.fit_res[qubit]['gamma_intercept_std'])
-
-                    self.fit_res[qubit]['gamma_slope_ramsey_std']
-                    self.fit_res[qubit]['gamma_slope_echo_std']
+                    # dac_fit_text = '$\Gamma = {:.2g}(\pm {:.2g})$\n'.format(
+                    #                 self.fit_res[qubit]['gamma_intercept'], self.fit_res[qubit]['gamma_intercept_std'])
+                    dac_fit_text = '$\Gamma/2 \pi = {:.2g}(\pm {:.2g})$ kHz\n'.format(
+                                    self.fit_res[qubit]['gamma_intercept']/1e3 , self.fit_res[qubit]['gamma_intercept_std']/1e3)
+                    dac_fit_text += 'slope Ramsey = {:.2g}(\pm {:.2g}) (m$\Phi_0$)\n'.format(
+                                    self.fit_res[qubit]['gamma_slope_ramsey']*1e3, self.fit_res[qubit]['gamma_slope_ramsey_std']*1e3)
+                    dac_fit_text += 'slope echo = {:.2g}(\pm {:.2g}) (m$\Phi_0$)'.format(
+                                    self.fit_res[qubit]['gamma_slope_echo']*1e3, self.fit_res[qubit]['gamma_slope_echo_std']*1e3)
 
                     self.plot_dicts[cg_base + '_text_msg'] = {
                         'ax_id': cg_base,
-                        # 'ypos': 0.15,
+                        'xpos': 0.6,
+                        'ypos': 0.95,
                         'plotfn': self.plot_text,
                         'box_props': 'fancy',
                         'text_string': dac_fit_text,
@@ -870,12 +1022,29 @@ def partial_omega_over_flux(flux, Ec, Ej):
             np.sin(np.pi * flux) / np.sqrt(np.abs(np.cos(np.pi * flux)))
     return model
 
+def fixed_Q_factor_model(freq, Q):
+    '''
+    inverse proportional dependence of the qubit T1 on frequrncy can be described
+    with a constant Q-factor of a qubit: Q = 2*pi*f*T1
+    Here is a function calculating T1(f) that can be fitted to data
+    '''
+
+    model = Q/(2*np.pi*freq)
+    return model
+
+def fit_fixed_Q_factor(freq, tau):
+    Q_factor_model = lmfit.Model(fixed_Q_factor_model)
+    Q_factor_model.set_param_hint('Q', value=50e4, min=100e3, max=100e6)
+    fit_result_Q_factor = Q_factor_model.fit(tau, freq=freq)
+    return fit_result_Q_factor
+
 
 def fit_frequencies(dac, freq):
+    dac0_guess = 5*np.max(np.abs(dac))
     arch_model.set_param_hint('Ec', value=260e6, min=100e6, max=350e6)
     arch_model.set_param_hint('Ej', value=19e9, min=0.1e9, max=30e9)
     arch_model.set_param_hint('offset', value=0, min=-0.05, max=0.05)
-    arch_model.set_param_hint('dac0', value=0.1, min=0)
+    arch_model.set_param_hint('dac0', value=dac0_guess, min=0)
 
     arch_model.make_params()
     # print('freq, dac', freq, dac)
@@ -913,3 +1082,17 @@ def fit_gammas(sensitivity, Gamma_phi_ramsey, Gamma_phi_echo, verbose: bool = Fa
     if verbose:
         lmfit.printfuncs.report_fit(fit_result_gammas.params)
     return fit_result_gammas
+
+
+def format_value_string(par_name: str, lmfit_par, end_char=''):
+    """
+    Formats an lmfit par to a  string of value with uncertainty.
+    """
+    val_string = par_name
+    val_string += ': {:.3g}'.format(lmfit_par.value)
+    if lmfit_par.stderr is not None:
+        val_string += r'$\pm$' + '{:.3g}'.format(lmfit_par.stderr)
+    else:
+        val_string += r'$\pm$' + 'NaN'
+    val_string += end_char
+    return val_string

@@ -914,6 +914,18 @@ class ziShellDevice:
         else:
             self.daq.vectorWrite('/' + self.device + '/' + path, value)
 
+    def sets(self, path, value, sync=False):
+        if not self.daq:
+            raise(ziShellDAQError())
+
+        path = path.lower()
+
+        # Handle absolute path
+        if path[0] == '/':
+            self.daq.setString(path, value)
+        else:
+            self.daq.setString('/' + self.device + '/' + path, value)
+
     def geti(self, path, deep=True):
         if not self.daq:
             raise(ziShellDAQError())

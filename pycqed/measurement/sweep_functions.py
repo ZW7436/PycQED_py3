@@ -154,6 +154,26 @@ class None_Sweep(Soft_Sweep):
         '''
         pass
 
+class None_Sweep_With_Parameter_Returned(Soft_Sweep):
+
+    def __init__(self, sweep_control='soft', sweep_points=None,
+                 name: str='None_Sweep', parameter_name: str='pts',
+                 unit: str='arb. unit',
+                 **kw):
+        super().__init__()
+        self.sweep_control = sweep_control
+        self.name = name
+        self.parameter_name = parameter_name
+        self.unit = unit
+        self.sweep_points = sweep_points
+
+    def set_parameter(self, val):
+        '''
+        returns something a bit different to simulate the set_parameter reading
+        out the set parameter from the instrument
+        '''
+        return val+0.1
+
 
 class None_Sweep_idx(None_Sweep):
 
@@ -743,6 +763,27 @@ class QWG_flux_amp(Soft_Sweep):
         self.QWG.getOperationComplete()
 
 
+class lutman_par(Soft_Sweep):
+    """
+    Sweeps a LutMan parameter and uploads the waveforms to AWG (in real-time if
+    supported)
+    """
+
+    def __init__(self, LutMan, LutMan_parameter):
+        self.set_kw()
+        self.name = LutMan_parameter.name
+        self.parameter_name = LutMan_parameter.label
+        self.unit = LutMan_parameter.unit
+        self.sweep_control = 'soft'
+        self.LutMan = LutMan
+        self.LutMan_parameter = LutMan_parameter
+
+    def set_parameter(self, val):
+        self.LutMan_parameter.set(val)
+        self.LutMan.load_waveforms_onto_AWG_lookuptable(
+            regenerate_waveforms=True)
+
+
 class QWG_lutman_par_chunks(Soft_Sweep):
     '''
     Sweep function that divides sweep points into chunks. Every chunk is
@@ -900,7 +941,7 @@ class par_dB_attenuation_UHFQC_AWG_direct(Soft_Sweep):
     def set_parameter(self, val):
         UHFQC.awgs_0_outputs_1_amplitude(10**(val/20))
         UHFQC.awgs_0_outputs_0_amplitude(10**(val/20))
-       
+
 
 
 class lutman_par_UHFQC_dig_trig(Soft_Sweep):
@@ -1043,6 +1084,7 @@ class multi_sweep_function(Soft_Sweep):
         for sweep_function in self.sweep_functions:
             sweep_function.set_parameter(val)
 
+
 class two_par_joint_sweep(Soft_Sweep):
     """
     Allows jointly sweeping two parameters while preserving their
@@ -1050,7 +1092,7 @@ class two_par_joint_sweep(Soft_Sweep):
     Allows par_A and par_B to be arrays of parameters
     """
     def __init__(self, par_A, par_B, preserve_ratio: bool=True,
-                 retrieve_value=False, **kw):
+                 retrieve_value=False, instr=None, **kw):
         self.set_kw()
         self.unit = par_A.unit
         self.sweep_control = 'soft'
@@ -1059,6 +1101,7 @@ class two_par_joint_sweep(Soft_Sweep):
         self.name = par_A.name
         self.parameter_name = par_A.name
         self.retrieve_value = retrieve_value
+        self.instr=instr
         if preserve_ratio:
             try:
                 self.par_ratio = self.par_B.get()/self.par_A.get()
@@ -1072,7 +1115,8 @@ class two_par_joint_sweep(Soft_Sweep):
         self.par_A.set(val)
         self.par_B.set(val*self.par_ratio)
         if self.retrieve_value:
-            self.par_A()  # only get first one to prevent overhead
+            if self.instr:
+                self.instr.operationComplete()  # only get first one to prevent overhead
 
 
 class FLsweep(Soft_Sweep):
@@ -1090,7 +1134,8 @@ class FLsweep(Soft_Sweep):
 
     def set_parameter(self, val):
         self.par(val)
-        self.lm.load_waveform_realtime(self.waveform_name)
+        self.lm.load_waveform_realtime(self.waveform_name,
+                                       regenerate_waveforms=True)
 
 
 class FLsweep_QWG(Soft_Sweep):
@@ -1123,3 +1168,29 @@ class FLsweep_QWG(Soft_Sweep):
         self.lm.load_waveform_onto_AWG_lookuptable(
             self.waveform_name, regenerate_waveforms=True)
         awg.start()
+
+
+class Nested_resonator_tracker(Soft_Sweep):
+    """
+    For resonator tr.
+    """
+    def __init__(self, qubit, nested_MC, par, freqs=None, **kw):
+        super().__init__(**kw)
+        self.qubit = qubit
+        self.freqs = freqs
+        self.par = par
+        self.nested_MC = nested_MC
+        self.parameter_name = par.name
+        self.unit = par.unit
+        self.name = par.name
+
+    def set_parameter(self, val):
+        self.par(val)
+        self.qubit.find_resonator_frequency(freqs=self.freqs, MC=self.nested_MC)
+        self.qubit._prep_ro_sources()
+        spec_source = self.qubit.instr_spec_source.get_instr()
+        spec_source.on()
+
+
+
+

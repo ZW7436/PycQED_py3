@@ -178,7 +178,7 @@ class UHFQC(Instrument):
         print('Initialized UHFQC', self._device,
               'in %.2fs' % (t1-t0))
 
-    def load_default_settings(self):
+    def load_default_settings(self, upload_sequence=True):
         # standard configurations adapted from Haendbaek's notebook
         # Run this block to do some standard configuration
 
@@ -192,7 +192,8 @@ class UHFQC(Instrument):
 
         # Load an AWG program (from Zurich
         # Instruments/LabOne/WebServer/awg/src)
-        self.awg_sequence_acquisition()
+        if upload_sequence:
+            self.awg_sequence_acquisition()
 
         # Turn on both outputs
         self.sigouts_0_on(1)
@@ -245,10 +246,12 @@ class UHFQC(Instrument):
         for i in range(0, self.nr_integration_channels):
             self.set('quex_rot_{0}_real'.format(i), 1.0)
             self.set('quex_rot_{0}_imag'.format(i), 0.0)
+            # remove offsets to weight function
+            self.set('quex_trans_offset_weightfunction_{}'.format(i), 0.0)
 
         # No cross-coupling in the matrix multiplication (identity matrix)
         for i in range(0, self.nr_integration_channels):
-            for j in range(0,self.nr_integration_channels):
+            for j in range(0, self.nr_integration_channels):
                 if i == j:
                     self.set('quex_trans_{0}_col_{1}_real'.format(i, j), 1)
                 else:
@@ -270,8 +273,8 @@ class UHFQC(Instrument):
         # detect when the measurement is complete, and then manually fetch the results using the 'get'
         # command. Disabling the automatic result readout speeds up the operation a bit, since we avoid
         # sending the same data twice.
-        self.quex_iavg_readout(0)
-        self.quex_rl_readout(0)
+        # self.quex_iavg_readout(0)
+        # self.quex_rl_readout(0)
 
         # The custom firmware will feed through the signals on Signal Input 1 to Signal Output 1 and Signal Input 2 to Signal Output 2
         # when the AWG is OFF. For most practical applications this is not really useful. We, therefore, disable the generation of
@@ -502,7 +505,7 @@ class UHFQC(Instrument):
             timeout (float): time in seconds before timeout Error is raised.
 
         """
-        data = dict()
+        data = {k: [] for k, dummy in enumerate(self.acquisition_paths)}
 
         # Start acquisition
         if arm:
@@ -518,12 +521,18 @@ class UHFQC(Instrument):
             for n, p in enumerate(self.acquisition_paths):
                 if p in dataset:
                     for v in dataset[p]:
-                        if n in data:
-                            data[n] = np.concatenate((data[n], v['vector']))
-                        else:
-                            data[n] = v['vector']
+                        data[n] = np.concatenate((data[n], v['vector']))
                         if len(data[n]) >= samples:
                             gotem[n] = True
+
+                #if p in dataset:
+                #    for v in dataset[p]:
+                #        if n in data:
+                #            data[n] = np.concatenate((data[n], v['vector']))
+                #        else:
+                #            data[n] = v['vector']
+                #        if len(data[n]) >= samples:
+                #            gotem[n] = True
             accumulated_time += acquisition_time
 
         if not all(gotem):
@@ -538,8 +547,9 @@ class UHFQC(Instrument):
 
     def acquisition(self, samples, acquisition_time=0.010, timeout=0,
                     channels=(0, 1), mode='rl'):
+        self.timeout(timeout)
         self.acquisition_initialize(channels, mode)
-        data = self.acquisition_poll(samples, acquisition_time, timeout)
+        data = self.acquisition_poll(samples, True, acquisition_time)
         self.acquisition_finalize()
 
         return data
@@ -549,12 +559,14 @@ class UHFQC(Instrument):
         self.acquisition_paths = []
 
         if mode == 'rl':
+            readout = 0
             for c in channels:
                 self.acquisition_paths.append(
                     '/' + self._device + '/quex/rl/data/{}'.format(c))
+                readout += (1 << c)
             self._daq.subscribe('/' + self._device + '/quex/rl/data/*')
             # Enable automatic readout
-            self._daq.setInt('/' + self._device + '/quex/rl/readout', 1)
+            self._daq.setInt('/' + self._device + '/quex/rl/readout', readout)
         else:
             for c in channels:
                 self.acquisition_paths.append(
@@ -678,28 +690,35 @@ class UHFQC(Instrument):
 
     def prepare_SSB_weight_and_rotation(self, IF,
                                         weight_function_I=0,
-                                        weight_function_Q=1):
+                                        weight_function_Q=1,
+                                        rotation_angle=0,
+                                        length=4096/1.8e9):
         """
         Sets defualt integration weights for SSB modulation, beware does not
         load pulses or prepare the UFHQC progarm to do data acquisition
         """
         trace_length = 4096
         tbase = np.arange(0, trace_length/1.8e9, 1/1.8e9)
-        print(len(tbase))
-        cosI = np.array(np.cos(2*np.pi*IF*tbase))
-        sinI = np.array(np.sin(2*np.pi*IF*tbase))
+        cosI = np.array(np.cos(2*np.pi*IF*tbase+rotation_angle))
+        sinI = np.array(np.sin(2*np.pi*IF*tbase+rotation_angle))
+        if length<4096/1.8e9:
+            max_sample=int(length*1.8e9)
+            #setting the samples beyond the length to 0
+            cosI[max_sample:]=0
+            sinI[max_sample:]=0
         self.set('quex_wint_weights_{}_real'.format(weight_function_I),
                  np.array(cosI))
         self.set('quex_wint_weights_{}_imag'.format(weight_function_I),
                  np.array(sinI))
-        self.set('quex_wint_weights_{}_real'.format(weight_function_Q),
-                 np.array(sinI))
-        self.set('quex_wint_weights_{}_imag'.format(weight_function_Q),
-                 np.array(cosI))
         self.set('quex_rot_{}_real'.format(weight_function_I), 1.0)
         self.set('quex_rot_{}_imag'.format(weight_function_I), 1.0)
-        self.set('quex_rot_{}_real'.format(weight_function_Q), 1.0)
-        self.set('quex_rot_{}_imag'.format(weight_function_Q), -1.0)
+        if weight_function_Q!=None:
+            self.set('quex_wint_weights_{}_real'.format(weight_function_Q),
+                     np.array(sinI))
+            self.set('quex_wint_weights_{}_imag'.format(weight_function_Q),
+                     np.array(cosI))
+            self.set('quex_rot_{}_real'.format(weight_function_Q), 1.0)
+            self.set('quex_rot_{}_imag'.format(weight_function_Q), -1.0)
 
     def prepare_DSB_weight_and_rotation(self, IF, weight_function_I=0, weight_function_Q=1):
         trace_length = 4096
@@ -938,7 +957,7 @@ setTrigger(0);"""
         join = False
         n = 0
         while n < len(array):
-            string += '{:.3f}'.format(array[n])
+            string += '{:.8f}'.format(array[n])
             if ((n+1) % 1024 != 0) and n < len(array)-1:
                 string += ','
 

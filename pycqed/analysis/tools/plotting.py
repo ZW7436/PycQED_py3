@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 import matplotlib
 from matplotlib import cm
 import numpy as np
+import matplotlib.colors as col
+import hsluv
 
 
 def set_xlabel(axis, label, unit=None, **kw):
@@ -24,7 +26,7 @@ def set_xlabel(axis, label, unit=None, **kw):
         scale_factor, unit = SI_prefix_and_scale_factor(
             val=max(abs(xticks)), unit=unit)
         formatter = matplotlib.ticker.FuncFormatter(
-            lambda x, pos: round(x*scale_factor, ndigits=3))
+            lambda x, pos: '{:.4g}'.format(x*scale_factor))
 
         axis.xaxis.set_major_formatter(formatter)
 
@@ -50,7 +52,7 @@ def set_ylabel(axis, label, unit=None, **kw):
         scale_factor, unit = SI_prefix_and_scale_factor(
             val=max(abs(yticks)), unit=unit)
         formatter = matplotlib.ticker.FuncFormatter(
-            lambda x, pos: round(x*scale_factor, ndigits=3))
+            lambda x, pos: '{:.4g}'.format(x*scale_factor))
 
         axis.yaxis.set_major_formatter(formatter)
 
@@ -60,12 +62,13 @@ def set_ylabel(axis, label, unit=None, **kw):
     return axis
 
 
+SI_PREFIXES = dict(zip(range(-24, 25, 3), 'yzafpnμm kMGTPEZY'))
+SI_PREFIXES[0] = ""
 
-SI_PREFIXES_2 = dict(zip(range(-24, 25, 3), 'yzafpnμm kMGTPEZY'))
-SI_PREFIXES_2[0] = ""
-#SI_PREFIXES = 'yzafpnμm kMGTPEZY'
+# N.B. not all of these are SI units, however, all of these support SI prefixes
+SI_UNITS = 'm,s,g,W,J,V,A,F,T,Hz,Ohm,S,N,C,px,b,B,K,Bar,Vpeak,Vpp,Vp,Vrms'.split(
+    ',')
 
-SI_UNITS = 'm,s,g,W,J,V,A,F,T,Hz,Ohm,S,N,C,px,b,B,K,Bar,Vpeak,Vpp,Vp,Vrms'.split(',')
 
 def SI_prefix_and_scale_factor(val, unit=None):
     """
@@ -83,51 +86,35 @@ def SI_prefix_and_scale_factor(val, unit=None):
         try:
             with np.errstate(all="ignore"):
                 prefix_power = np.log10(abs(val))//3 * 3
-            return 10 ** -prefix_power, SI_PREFIXES_2[prefix_power] + unit 
+                prefix = SI_PREFIXES[prefix_power]
+                # Greek symbols not supported in tex
+                if plt.rcParams['text.usetex'] and prefix == 'μ':
+                    prefix = r'$\mu$'
+
+            return 10 ** -prefix_power,  prefix + unit
         except (KeyError, TypeError):
             pass
 
     return 1, unit if unit is not None else ""
-
-    validtypes = (float, int, np.integer, np.floating)
-    if unit in SI_UNITS and isinstance(val, validtypes):
-        if val == 0:
-            prefix_power = 0
-        else:
-            # The defined prefixes go down to -24 but this is below
-            # the numerical precision of python
-            prefix_power = np.clip(-15, (np.log10(abs(val))//3 * 3), 24)
-        # Determine SI prefix, number 8 corresponds to no prefix
-        SI_prefix_idx = int(prefix_power/3 + 8)
-        prefix = SI_PREFIXES[SI_prefix_idx]
-        # Convert the unit
-        scale_factor = 10**-prefix_power
-        unit = prefix+unit
-    else:
-        scale_factor = 1
-
-    if unit is None:
-        unit = ''  # to ensure proper return value
-    return scale_factor, unit
 
 
 def SI_val_to_msg_str(val: float, unit: str=None, return_type=str):
     """
     Takes in a value  with optional unit and returns a string tuple consisting
     of (value_str, unit) where the value and unit are rescaled according to
-    SI prefixes, IF the unit is an SI unit (according to the comprehensive list 
+    SI prefixes, IF the unit is an SI unit (according to the comprehensive list
     of SI units in this file ;).
 
     the value_str is of the type specified in return_type (str) by default.
     """
-    
+
     sc, new_unit = SI_prefix_and_scale_factor(val, unit)
     try:
         new_val = sc*val
     except TypeError:
         return return_type(val), unit
 
-    return return_type(new_val), new_unit 
+    return return_type(new_val), new_unit
 
 
 def data_to_table_png(data: list, filename: str, title: str='',
@@ -296,7 +283,6 @@ def flex_colormesh_plot_vs_xy(xvals, yvals, zvals, ax=None,
     xvals = np.array(xvals)
     yvals = np.array(yvals)
 
-
     # First, we need to sort the data as otherwise we get odd plotting
     # artefacts. An example is e.g., plotting a fourier transform
     sorted_x_arguments = xvals.argsort()
@@ -366,13 +352,21 @@ def autolabel_barplot(ax, rects, rotation=90):
                 ha='center', va='bottom', rotation=rotation)
 
 
+def set_axeslabel_color(ax, color):
+    '''
+    Ad hoc function to set the labels, ticks, ticklabels and title to a color.
 
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.colors as col
-import hsluv # install via pip
+    This is useful when e.g., making a presentation on a dark background
+    '''
+    ax.tick_params(color=color, which='both')  # both major and minor ticks
+    plt.setp(ax.get_xticklabels(), color=color)
+    plt.setp(ax.get_yticklabels(), color=color)
+    plt.setp(ax.yaxis.get_label(), color=color)
+    plt.setp(ax.xaxis.get_label(), color=color)
+    plt.setp(ax.title, color=color)
 
-##### generate custom colormaps
+
+# generate custom colormaps
 def make_segmented_cmap():
     white = '#ffffff'
     black = '#000000'
@@ -382,21 +376,35 @@ def make_segmented_cmap():
         'anglemap', [black, red, white, blue, black], N=256, gamma=1)
     return anglemap
 
-def make_anglemap( N = 256, use_hpl = True ):
-    h = np.ones(N) # hue
-    h[:N//2] = 11.6 # red
-    h[N//2:] = 258.6 # blue
-    s = 100 # saturation
-    l = np.linspace(0, 100, N//2) # luminosity
-    l = np.hstack( (l,l[::-1] ) )
 
-    colorlist = np.zeros((N,3))
+def make_anglemap(N=256, use_hpl=True):
+    h = np.ones(N)  # hue
+    h[:N//2] = 11.6  # red
+    h[N//2:] = 258.6  # blue
+    s = 100  # saturation
+    l = np.linspace(0, 100, N//2)  # luminosity
+    l = np.hstack((l, l[::-1]))
+
+    colorlist = np.zeros((N, 3))
     for ii in range(N):
         if use_hpl:
-            colorlist[ii,:] = hsluv.hpluv_to_rgb( (h[ii], s, l[ii]) )
+            colorlist[ii, :] = hsluv.hpluv_to_rgb((h[ii], s, l[ii]))
         else:
-            colorlist[ii,:] = hsluv.hsluv_to_rgb( (h[ii], s, l[ii]) )
-    colorlist[colorlist > 1] = 1 # correct numeric errors
+            colorlist[ii, :] = hsluv.hsluv_to_rgb((h[ii], s, l[ii]))
+    colorlist[colorlist > 1] = 1  # correct numeric errors
     colorlist[colorlist < 0] = 0
-    return col.ListedColormap( colorlist )
-hsluv_anglemap = make_anglemap( use_hpl = False )
+    return col.ListedColormap(colorlist)
+
+
+hsluv_anglemap = make_anglemap(use_hpl=False)
+
+
+def plot_fit(xvals, fit_res, ax, **plot_kws):
+    """
+    Evaluates a fit result at specified values to plot the fit.
+    """
+    model = fit_res.model
+    independent_var = model.independent_vars[0]
+    yvals = model.eval(fit_res.params, **{independent_var: xvals})
+    ax.plot(xvals, yvals, **plot_kws)
+

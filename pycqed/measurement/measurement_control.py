@@ -89,6 +89,13 @@ class MeasurementControl(Instrument):
                            initial_value=True)
 
         self.add_parameter(
+            'on_progress_callback', vals=vals.Callable(),
+            docstring='A callback to communicate progress. This should be a '
+            'Callable accepting ints between 0 and 100 indicating percdone.',
+            parameter_class=ManualParameter,
+            initial_value=None)
+
+        self.add_parameter(
             'cfg_clipping_mode', vals=vals.Bool(),
             docstring='Clipping mode, when True ignores ValueErrors  when '
             'setting parameters. This can be useful when running optimizations',
@@ -283,8 +290,10 @@ class MeasurementControl(Instrument):
             self.adaptive_function = fmin_powell
         if issubclass(self.adaptive_function, BaseLearner):
             Learner = self.adaptive_function
-            self.learner = Learner(self.optimization_function,
-                                   bounds=self.af_pars['bounds'])
+            self.learner = Learner(
+                self.optimization_function,
+                loss_per_triangle=self.af_pars.get('loss_per_triangle'),
+                bounds=self.af_pars['bounds'])
             # N.B. the runner that is used is not an `adaptive.Runner` object
             # rather it is the `adaptive.runner.simple` function. This
             # ensures that everything runs in a single process, as is
@@ -419,13 +428,13 @@ class MeasurementControl(Instrument):
                             logging.warning(e)
                         else:
                             raise e
-                if isinstance(set_val, float):
-                    # The Value in x is overwritten by the value that the
-                    # sweep function returns. This allows saving the value
-                    # that was actually set rather than the one that was
-                    # intended. This does require custom support from
-                    # a sweep function.
-                    x[-i] = set_val
+            if isinstance(set_val, float):
+                # The Value in x is overwritten by the value that the
+                # sweep function returns. This allows saving the value
+                # that was actually set rather than the one that was
+                # intended. This does require custom support from
+                # a sweep function.
+                x[-i-1] = set_val
 
         # used for next iteration
         self.last_sweep_pts = x
@@ -677,7 +686,16 @@ class MeasurementControl(Instrument):
                             # can be specified in MC.run(exp_metadata['bins'])
                             if self.plotting_bins is not None:
                                 x = self.plotting_bins
-                                y = np.mean(y.reshape(
+                                if len(y) % len(x) != 0:
+                                    # nan's are appended if shapes do not match
+                                    missing_vals = missing_vals = \
+                                        int(len(x)-len(y) % len(x))
+                                    y_ext = np.concatenate([
+                                        y, np.ones(missing_vals)*np.nan])
+                                else:
+                                    y_ext = y
+
+                                y = np.nanmean(y_ext.reshape(
                                     (len(self.plotting_bins), -1),
                                     order='F'), axis=1)
 
@@ -1364,7 +1382,8 @@ class MeasurementControl(Instrument):
                     t_left=round((100.-percdone)/(percdone) *
                                  elapsed_time, 1) if
                     percdone != 0 else '')
-
+            if self.on_progress_callback() is not None:
+                self.on_progress_callback()(percdone)
             if percdone != 100:
                 end_char = ''
             else:

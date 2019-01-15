@@ -3,6 +3,8 @@ import matplotlib.pyplot as plt
 from scipy.special import erfc
 import lmfit
 import logging
+from pycqed.analysis import analysis_toolbox as a_tools
+from pycqed.analysis.tools import data_manipulation as dm_tools
 
 
 #################################
@@ -92,7 +94,7 @@ def TwinLorentzFunc(f, A_gf_over_2, A, f0_gf_over_2, f0,
 def Qubit_dac_to_freq(dac_voltage, f_max, E_c,
                       dac_sweet_spot, V_per_phi0=None,
                       dac_flux_coefficient=None,
-                      asymmetry=0):
+                      asymmetry=0, **kwargs):
     '''
     The cosine Arc model for uncalibrated flux for asymmetric qubit.
 
@@ -122,7 +124,7 @@ def Resonator_dac_to_freq(dac_voltage, f_max_qubit, f_0_res,
                           E_c, dac_sweet_spot,
                           coupling, V_per_phi0=None,
                           dac_flux_coefficient=None,
-                          asymmetry=0):
+                          asymmetry=0, **kwargs):
     qubit_freq = Qubit_dac_to_freq(dac_voltage=dac_voltage, f_max=f_max_qubit, E_c=E_c,
                                    dac_sweet_spot=dac_sweet_spot, V_per_phi0=V_per_phi0,
                                    dac_flux_coefficient=dac_flux_coefficient,
@@ -310,33 +312,10 @@ def HangerFuncAmplitude(f, f0, Q, Qe, A, theta):
     return abs(A * (1. - Q / Qe * np.exp(1.j * theta) / (1. + 2.j * Q * (f / 1.e9 - f0) / f0)))
 
 
-def HangerFuncComplex(f, pars):
-    '''
-    This is the complex function for a hanger which DOES NOT
-    take into account a possible slope
-    Input:
-        f = frequency
-        pars = parameters dictionary
-               f0, Q, Qe, A, theta, phi_v, phi_0
 
-    Author: Stefano Poletto
-    '''
-    f0 = pars['f0']
-    Q = pars['Q']
-    Qe = pars['Qe']
-    A = pars['A']
-    theta = pars['theta']
-    phi_v = pars['phi_v']
-    phi_0 = pars['phi_0']
-
-    S21 = A * (1 - Q / Qe * np.exp(1j * theta) / (1 + 2.j * Q * (f / 1.e9 - f0) / f0)) * \
-          np.exp(1j * (phi_v * f + phi_0))
-
-    return S21
-
-def hanger_func_complex_SI(f: float, f0: float, Ql: float, Qe: float,
-                           A: float, theta: float, phi_v: float, phi_0: float,
-                           alpha:float =1):
+def hanger_func_complex_SI(f, f0, Q, Qe,
+                           A, theta, phi_v, phi_0,
+                           slope =1):
     '''
     This is the complex function for a hanger (lamda/4 resonator).
     See equation 3.1 of the Asaad master thesis.
@@ -349,21 +328,41 @@ def hanger_func_complex_SI(f: float, f0: float, Ql: float, Qe: float,
         f   : frequency
         f0  : resonance frequency
         A   : background transmission amplitude
-        Ql  : loaded quality factor
+        Q  : loaded quality factor
         Qe  : extrinsic quality factor
         theta:  phase of Qe (in rad)
         phi_v:  phase to account for propagation delay to sample
         phi_0:  phase to account for propagation delay from sample
-        alpha:  slope of signal around the resonance
+        slope:  slope of signal around the resonance
+
+    The complex hanger function that has a list of parameters as input
+    is now called hanger_func_complex_SI_pars
 
     '''
-    slope_corr = (1+alpha*(f-f0)/f0)
+    slope_corr = (1+slope*(f-f0)/f0)
     propagation_delay_corr = np.exp(1j * (phi_v * f + phi_0))
-    hanger_contribution = (1 - Ql / Qe * np.exp(1j * theta)/
-                               (1 + 2.j * Ql * (f  - f0) / f0))
+    hanger_contribution = (1 - Q / Qe * np.exp(1j * theta)/
+                               (1 + 2.j * Q * (f  - f0) / f0))
     S21 = A *  slope_corr * hanger_contribution * propagation_delay_corr
 
     return S21
+
+def hanger_func_complex_SI_pars(f,pars):
+    '''
+    This function is used in the minimization fitting which requires parameters.
+    It calls the function hanger_func_complex_SI, see there for details.
+    '''
+
+    f0 = pars['f0']
+    Ql = pars['Ql']
+    Qe = pars['Qe']
+    A = pars['A']
+    theta = pars['theta']
+    phi_v = pars['phi_v']
+    phi_0 = pars['phi_0']
+    alpha = pars['alpha']
+    return hanger_func_complex_SI(f, f0, Ql, Qe,
+                           A, theta, phi_v, phi_0, alpha)
 
 
 
@@ -373,6 +372,7 @@ def PolyBgHangerFuncAmplitude(f, f0, Q, Qe, A, theta, poly_coeffs):
     # NOT DEBUGGED
     return np.abs((1. + np.polyval(poly_coeffs, (f / 1.e9 - f0) / f0)) *
                   HangerFuncAmplitude(f, f0, Q, Qe, A, theta))
+
 
 
 def SlopedHangerFuncAmplitude(f, f0, Q, Qe, A, theta, slope):
@@ -548,6 +548,47 @@ def avoided_crossing_direct_coupling(flux, f_center1, f_center2,
     result = np.where(flux_state, frequencies[:, 0], frequencies[:, 1])
     return result
 
+def avoided_crossing_freq_shift(flux, a, b, g):
+    """
+    Calculates the frequency shift due to an avoided crossing for the following model:
+        [delta_f,  g ]
+        [g,        0 ]
+
+    delta_f = a*flux + b 
+    
+    Parameters 
+    ----------
+    flux : array like
+        flux bias values 
+    a, b : float
+        parameters used to calculate frequency distance (delta) away from 
+        avoided crossing according to 
+            delta_f = a*flux+b 
+    
+    g: float
+        Coupling strength strength, beware to relabel your variable if using this
+        model to fit J1 or J2.
+    
+    Returns
+    ------- 
+    frequency_shift : (float) 
+    
+    
+    Note: this model is useful for fitting the frequency shift due to an interaction 
+    in a chevron experiment (after fourier transforming the data). 
+    """
+    
+    frequencies = np.zeros([len(flux), 2])
+    for kk, fl_i in enumerate(flux):
+        f_1 = a*fl_i  +  b
+        f_2 = 0
+        matrix = [[f_1, g],
+                  [g, f_2]]
+        frequencies[kk, :] = np.linalg.eigvalsh(matrix)[:2]
+    result = frequencies[:, 1]- frequencies[:, 0]
+    return result
+
+
 
 ######################
 # Residual functions #
@@ -576,7 +617,7 @@ def residual_complex_fcn(pars, cmp_fcn, x, y):
 ####################
 # Guess functions  #
 ####################
-def exp_dec_guess(model, data, t):
+def exp_dec_guess(model, data, t, vary_n=False):
     '''
     Assumes exponential decay in estimating the parameters
     '''
@@ -587,11 +628,120 @@ def exp_dec_guess(model, data, t):
 
     model.set_param_hint('amplitude', value=amp_guess)
     model.set_param_hint('tau', value=tau_guess)
-    model.set_param_hint('n', value=1, vary=False)
+    if vary_n:
+        model.set_param_hint('n', value=1.1, vary=vary_n, min=1)
+    else:
+        model.set_param_hint('n', value=1, vary=vary_n)
     model.set_param_hint('offset', value=offs_guess)
 
     params = model.make_params()
     return params
+
+
+
+def SlopedHangerFuncAmplitudeGuess(data, f, fit_window=None):
+    xvals = f
+    peaks = a_tools.peak_finder(xvals, data)
+      # Search for peak
+    if peaks['dip'] is not None:    # look for dips first
+        f0 = peaks['dip']
+        amplitude_factor = -1.
+    elif peaks['peak'] is not None:  # then look for peaks
+        f0 = peaks['peak']
+        amplitude_factor = 1.
+    else:                                 # Otherwise take center of range
+        f0 = np.median(xvals)
+        amplitude_factor = -1.
+
+    min_index = np.argmin(data)
+    max_index = np.argmax(data)
+    min_frequency = xvals[min_index]
+    max_frequency = xvals[max_index]
+
+    amplitude_guess = max(dm_tools.reject_outliers(data))
+
+    # Creating parameters and estimations
+    S21min = (min(dm_tools.reject_outliers(data)) /
+              max(dm_tools.reject_outliers(data)))
+
+    Q = f0 / abs(min_frequency - max_frequency)
+
+    Qe = abs(Q / abs(1 - S21min))
+    guess_dict = {'f0': {'value': f0*1e-9,
+                         'min': min(xvals)*1e-9,
+                         'max': max(xvals)*1e-9},
+                  'A': {'value': amplitude_guess},
+                  'Q': {'value': Q,
+                        'min': 1,
+                        'max': 50e6},
+                  'Qe': {'value': Qe,
+                         'min': 1,
+                         'max': 50e6},
+                  'Qi': {'expr': 'abs(1./(1./Q-1./Qe*cos(theta)))',
+                         'vary': False},
+                  'Qc': {'expr': 'Qe/cos(theta)',
+                         'vary': False},
+                  'theta': {'value': 0,
+                            'min': -np.pi/2,
+                            'max': np.pi/2},
+                  'slope': {'value':0,
+                            'vary':True}}
+    return guess_dict
+
+
+
+def hanger_func_complex_SI_Guess(data, f, fit_window=None):
+    ## This is complete garbage, just to get some return value
+    xvals = f
+    abs_data = np.abs(data)
+    peaks = a_tools.peak_finder(xvals, abs_data)
+      # Search for peak
+    if peaks['dip'] is not None:    # look for dips first
+        f0 = peaks['dip']
+        amplitude_factor = -1.
+    elif peaks['peak'] is not None:  # then look for peaks
+        f0 = peaks['peak']
+        amplitude_factor = 1.
+    else:                                 # Otherwise take center of range
+        f0 = np.median(xvals)
+        amplitude_factor = -1.
+
+    min_index = np.argmin(abs_data)
+    max_index = np.argmax(abs_data)
+    min_frequency = xvals[min_index]
+    max_frequency = xvals[max_index]
+
+    amplitude_guess = max(dm_tools.reject_outliers(abs_data))
+
+    # Creating parameters and estimations
+    S21min = (min(dm_tools.reject_outliers(abs_data)) /
+              max(dm_tools.reject_outliers(abs_data)))
+
+    Q = f0 / abs(min_frequency - max_frequency)
+
+    Qe = abs(Q / abs(1 - S21min))
+    guess_dict = {'f0': {'value': f0*1e-9,
+                         'min': min(xvals)*1e-9,
+                         'max': max(xvals)*1e-9},
+                  'A': {'value': amplitude_guess},
+                  'Qe': {'value': Qe,
+                         'min': 1,
+                         'max': 50e6},
+                  'Ql': {'value': Q,
+                         'min': 1,
+                         'max': 50e6},
+                  'theta': {'value': 0,
+                            'min': -np.pi/2,
+                            'max': np.pi/2},
+                  'alpha': {'value':0,
+                            'vary':True},
+                  'phi_0': {'value':0,
+                            'vary':True},
+                  'phi_v': {'value':0,
+                            'vary':True}}
+
+    return guess_dict
+
 
 
 def group_consecutives(vals, step=1):
@@ -668,12 +818,23 @@ def arc_guess(freq, dac, dd=0.1):
     return fmax, fmin, dac[dac_ss_index], arc_len
 
 
-def Resonator_dac_arch_guess(model, freq, dac_voltage, f_max_qubit: float = None, E_c: float = None):
-    fmax, fmin, dac_ss, period = arc_guess(freq=freq, dac=dac_voltage)
-    coup_guess = 15e6
+def Resonator_dac_arch_guess(model, data, dac_voltage,
+                             E_c: float = None, values=None):
+    if values is None:
+        values = {}
+
+    fmax, fmin, dac_ss, period = arc_guess(freq=data, dac=dac_voltage)
 
     # todo make better f_res guess
-    f_res = np.mean(freq)  # - (coup_guess ** 2 / (f_max_qubit - fmax))
+    f_res = np.mean(data)  # - (coup_guess ** 2 / (f_max_qubit - fmax))
+    f_res = values.get('f_res', f_res)
+    f_max_qubit = values.get('f_max_qubit', None)
+    dac_ss = values.get('dac_sweet_spot', dac_ss)
+    period = values.get('V_per_phi0', period)
+    EC = values.get('E_c', 260e6)
+    coup_guess = values.get('coup_guess', 15e6)
+    asymmetry = values.get('asymmetry', 0)
+
     f_max_qubit_vary = f_max_qubit is None
     f_max_qubit = f_max_qubit or f_res - 500e6
 
@@ -681,22 +842,29 @@ def Resonator_dac_arch_guess(model, freq, dac_voltage, f_max_qubit: float = None
     model.set_param_hint('f_max_qubit', value=f_max_qubit, min=3e9, max=8.5e9, vary=f_max_qubit_vary)
     model.set_param_hint('dac_sweet_spot', value=dac_ss, min=(dac_ss - 0.005) / 2, max=2 * (dac_ss + 0.005))
     model.set_param_hint('V_per_phi0', value=period, min=(period - 0.005) / 3, max=5 * (period + 0.005))
-    model.set_param_hint('asymmetry', value=0, max=1, min=-1)
+    model.set_param_hint('asymmetry', value=asymmetry, max=1, min=-1)
     model.set_param_hint('coupling', value=coup_guess, min=1e6, max=80e6)
-    E_c = E_c or 260e6
-    model.set_param_hint('E_c', value=E_c, min=50e6, max=400e6)
+    model.set_param_hint('E_c', value=EC, min=50e6, max=400e6)
 
     params = model.make_params()
     return params
 
 
-def Qubit_dac_arch_guess(model, freq, dac_voltage):
-    fmax, fmin, dac_ss, period = arc_guess(freq=freq, dac=dac_voltage)
+def Qubit_dac_arch_guess(model, data, dac_voltage, values=None):
+    if values is None:
+        values = {}
+    fmax, fmin, dac_ss, period = arc_guess(freq=data, dac=dac_voltage)
+    fmax = values.get('f_max', fmax)
+    dac_ss = values.get('dac_sweet_spot', dac_ss)
+    period = values.get('V_per_phi0', period)
+    EC = values.get('E_c', 260e6)
+    asymmetry = values.get('asymmetry', 0)
+
     model.set_param_hint('f_max', value=fmax, min=0.7 * fmax, max=1.3 * fmax)
     model.set_param_hint('dac_sweet_spot', value=dac_ss, min=(dac_ss - 0.005) / 2, max=2 * (dac_ss + 0.005))
     model.set_param_hint('V_per_phi0', value=period, min=(period - 0.005) / 3, max=5 * (period + 0.005))
-    model.set_param_hint('asymmetry', value=0, max=1, min=-1)
-    model.set_param_hint('E_c', value=260e6, min=50e6, max=400e6)
+    model.set_param_hint('asymmetry', value=asymmetry, max=1, min=-1)
+    model.set_param_hint('E_c', value=EC, min=50e6, max=400e6)
 
     params = model.make_params()
     return params
@@ -995,7 +1163,7 @@ DoubleExpDampOscModel = lmfit.Model(DoubleExpDampOscFunc)
 HangerAmplitudeModel = lmfit.Model(HangerFuncAmplitude)
 SlopedHangerAmplitudeModel = lmfit.Model(SlopedHangerFuncAmplitude)
 PolyBgHangerAmplitudeModel = lmfit.Model(PolyBgHangerFuncAmplitude)
-HangerComplexModel = lmfit.Model(HangerFuncComplex)
+HangerComplexModel = lmfit.Model(hanger_func_complex_SI)
 SlopedHangerComplexModel = lmfit.Model(SlopedHangerFuncComplex)
 QubitFreqDacModel = lmfit.Model(QubitFreqDac)
 QubitFreqFluxModel = lmfit.Model(QubitFreqFlux)
