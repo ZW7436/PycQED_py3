@@ -5,9 +5,10 @@ import json
 import os
 import sys
 import numpy as np
+from fnmatch import fnmatch
+import traceback
 from qcodes.instrument.base import Instrument
 from qcodes.utils import validators as vals
-from fnmatch import fnmatch
 from qcodes.instrument.parameter import ManualParameter
 
 
@@ -797,7 +798,8 @@ class UHFQC(Instrument):
                     tmp = self._daq.get(p, True, 0)
                     values[p] = tmp[p]
                 except:
-                    print("Unexpected error:", sys.exc_info()[0])
+                    print("Unexpected error: path =", p)
+                    traceback.print_exc(file=sys.stdout)
                     timeout += 1
 
         if single:
